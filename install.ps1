@@ -182,17 +182,34 @@ function Test-FigmaInstalled {
     return $null
 }
 
+function Get-FigmaCacheDirs {
+    # 不写死 DesktopProfile / v44：Figma 的 profile 目录名带版本号（v38…v44…），升级即变，
+    # 渠道目录名也不同（stable=DesktopProfile，其它=Profile）。这里在 %APPDATA%\Figma 下
+    # 按深度搜索名为 Cache 且内含 Cache_Data 的目录（Chromium HTTP 缓存特征），
+    # 既覆盖现有布局，也不怕以后换层数/换名字。
+    $base = Join-Path $env:APPDATA 'Figma'
+    if (-not (Test-Path $base)) { return @() }
+    $candidates = Get-ChildItem $base -Directory -Recurse -Depth 5 -Filter 'Cache' -ErrorAction SilentlyContinue
+    $list = New-Object System.Collections.Generic.List[string]
+    foreach ($c in $candidates) {
+        if (Test-Path (Join-Path $c.FullName 'Cache_Data')) { $list.Add($c.FullName) }
+    }
+    return $list
+}
+
 function Clear-FigmaCacheDir {
     # Figma 会把真实英文语言包按 build hash 缓存在 HTTP 缓存；只要它在代理之外跑过一次，
     # 之后即使本地代理返回中文，前端仍可能沿用缓存里的英文。安装时清一次最稳。
-    $cacheDir = Join-Path $env:APPDATA 'Figma\DesktopProfile\v44\Cache'
-    if (-not (Test-Path $cacheDir)) { return $false }
-    try {
-        Remove-Item $cacheDir -Recurse -Force -ErrorAction Stop
-        return $true
-    } catch {
-        return $false
+    $dirs = @(Get-FigmaCacheDirs)
+    if ($dirs.Count -eq 0) { return 0 }
+    $cleared = 0
+    foreach ($d in $dirs) {
+        try {
+            Remove-Item $d -Recurse -Force -ErrorAction Stop
+            $cleared++
+        } catch { }
     }
+    return $cleared
 }
 
 function New-Shortcuts {
@@ -638,21 +655,38 @@ function Stop-FigmaGracefully {
     }
 }
 
-function Clear-FigmaLocaleCache {
-    # Figma 会把真实英文语言包按 build hash 缓存在 HTTP 缓存里；只要它在代理之外跑过一次，
-    # 之后即使本地代理返回中文，前端仍可能沿用缓存里的英文。清理缓存目录即可。
-    $cacheDir = Join-Path $env:APPDATA 'Figma\DesktopProfile\v44\Cache'
-    if (-not (Test-Path $cacheDir)) { return $false }
-    try {
-        $sizeMb = [math]::Round(((Get-ChildItem $cacheDir -Recurse -File -ErrorAction SilentlyContinue |
-                    Measure-Object Length -Sum).Sum) / 1MB, 1)
-        Remove-Item $cacheDir -Recurse -Force -ErrorAction Stop
-        Write-Log "已清理 Figma 界面缓存（$sizeMb MB），避免旧英文语言包残留"
-        return $true
-    } catch {
-        Write-Log ("清理 Figma 缓存失败: " + $_.Exception.Message)
-        return $false
+function Get-FigmaCacheDirs {
+    # 不写死 profile 版本号/渠道名：在 %APPDATA%\Figma 下按深度搜索名为 Cache 且含
+    # Cache_Data 的目录（Chromium HTTP 缓存特征），Figma 改目录层级也不会漏。
+    $base = Join-Path $env:APPDATA 'Figma'
+    if (-not (Test-Path $base)) { return @() }
+    $candidates = Get-ChildItem $base -Directory -Recurse -Depth 5 -Filter 'Cache' -ErrorAction SilentlyContinue
+    $list = New-Object System.Collections.Generic.List[string]
+    foreach ($c in $candidates) {
+        if (Test-Path (Join-Path $c.FullName 'Cache_Data')) { $list.Add($c.FullName) }
     }
+    return $list
+}
+
+function Clear-FigmaLocaleCache {
+    $dirs = @(Get-FigmaCacheDirs)
+    if ($dirs.Count -eq 0) { return 0 }
+    $cleared = 0
+    $freedMb = 0
+    foreach ($d in $dirs) {
+        try {
+            $freedMb += ((Get-ChildItem $d -Recurse -File -ErrorAction SilentlyContinue |
+                        Measure-Object Length -Sum).Sum) / 1MB
+            Remove-Item $d -Recurse -Force -ErrorAction Stop
+            $cleared++
+        } catch {
+            Write-Log ("清理缓存失败（" + $d + "）: " + $_.Exception.Message)
+        }
+    }
+    if ($cleared -gt 0) {
+        Write-Log ("已清理 Figma 界面缓存：$cleared 个目录，约 " + [math]::Round($freedMb, 1) + " MB")
+    }
+    return $cleared
 }
 
 function Show-RestartDialog {
@@ -892,8 +926,10 @@ if ($figmaExe) {
     Write-Ok "已安装: $figmaExe"
     if (@(Get-Process Figma -ErrorAction SilentlyContinue).Count -gt 0) {
         Write-Warn2 "Figma 正在运行：请退出 Figma 后重新运行本脚本，或首次启动「Figma 中文版」时按提示重启"
-    } elseif (Clear-FigmaCacheDir) {
-        Write-Ok "已清理 Figma 界面缓存（避免旧英文语言包残留）"
+    } else {
+        $cleared = Clear-FigmaCacheDir
+        if ($cleared -gt 0) { Write-Ok "已清理 Figma 界面缓存（$cleared 个目录，避免旧英文语言包残留）" }
+        else { Write-Info "未发现需要清理的 Figma 缓存目录（首次运行时正常）" }
     }
 } elseif ($SkipFigma) {
     Write-Warn2 "未检测到 Figma，按参数要求跳过下载"
