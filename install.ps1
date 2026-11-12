@@ -108,8 +108,20 @@ function Get-File([string]$url, [string]$dest, [switch]$Progress) {
     if (Test-Path $curl) {
         $cargs = @('-sS', '-L', '--fail', '--retry', '3', '--retry-delay', '2', '-o', $dest, $url)
         if ($Progress) { $cargs = @('-sS', '-L', '--fail', '--retry', '3', '--retry-delay', '2', '--progress-bar', '-o', $dest, $url) }
-        & $curl @cargs
-        if ($LASTEXITCODE -ne 0) { throw "下载失败($LASTEXITCODE): $url" }
+        # 原生命令的 stderr 在 Stop 模式下会被当成终止性错误，这里临时降级
+        $oldEap = $ErrorActionPreference
+        $ErrorActionPreference = 'Continue'
+        try {
+            if ($Progress) {
+                & $curl @cargs 2>&1 | ForEach-Object { Write-Host $_ }
+            } else {
+                & $curl @cargs 2>&1 | Out-Null
+            }
+            $code = $LASTEXITCODE
+        } finally {
+            $ErrorActionPreference = $oldEap
+        }
+        if ($code -ne 0) { throw "下载失败($code): $url" }
     } else {
         Invoke-WebRequest -Uri $url -OutFile $dest -UseBasicParsing -TimeoutSec 600
     }
@@ -168,6 +180,19 @@ function Test-FigmaInstalled {
         }
     }
     return $null
+}
+
+function Clear-FigmaCacheDir {
+    # Figma 会把真实英文语言包按 build hash 缓存在 HTTP 缓存；只要它在代理之外跑过一次，
+    # 之后即使本地代理返回中文，前端仍可能沿用缓存里的英文。安装时清一次最稳。
+    $cacheDir = Join-Path $env:APPDATA 'Figma\DesktopProfile\v44\Cache'
+    if (-not (Test-Path $cacheDir)) { return $false }
+    try {
+        Remove-Item $cacheDir -Recurse -Force -ErrorAction Stop
+        return $true
+    } catch {
+        return $false
+    }
 }
 
 function New-Shortcuts {
@@ -378,7 +403,8 @@ def request(flow: http.HTTPFlow) -> None:
         {
             "Content-Type": "application/json; charset=utf-8",
             "Access-Control-Allow-Origin": "*",
-            "Cache-Control": "no-cache",
+            "Cache-Control": "no-store, no-cache, must-revalidate",
+            "Pragma": "no-cache",
         },
     )
     _log("SERVED " + name)
@@ -566,6 +592,104 @@ function Start-Mitm([string]$Mode, [string]$UpstreamUrl) {
     return $false
 }
 
+function Test-MitmHealthy {
+    # 通过本地代理请求一个固定命中的语言包 URL，确认返回的确实是 zh.json
+    $curl = Join-Path $env:SystemRoot 'System32\curl.exe'
+    if (-not (Test-Path $curl) -or -not (Test-Path $zhPath)) { return $true }
+    $tmp = Join-Path $env:TEMP ("figma-zh-probe-" + [guid]::NewGuid().ToString('N') + ".json")
+    # 原生命令（curl）出错会往 stderr 写内容，必须先降级 ErrorActionPreference，
+    # 否则在 Stop 模式下会被当成终止性错误，导致启动器静默退出。
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $curl -k -sS -x "http://127.0.0.1:$Port" --max-time 8 `
+            -o $tmp 'https://www.figma.com/webpack-artifacts/assets/figma_app-0000000000000000.min.en.json.br' 2>&1 | Out-Null
+        if (-not (Test-Path $tmp)) { return $false }
+        if ((Get-Item $tmp).Length -ne (Get-Item $zhPath).Length) { return $false }
+        return ((Get-FileHash $tmp -Algorithm SHA256).Hash -eq (Get-FileHash $zhPath -Algorithm SHA256).Hash)
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $oldEap
+        Remove-Item $tmp -Force -ErrorAction SilentlyContinue
+    }
+}
+
+function Stop-FigmaGracefully {
+    # 先正常关闭，关不掉的再强制；taskkill 的 stderr 不能在 Stop 模式下冒泡
+    $oldEap = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & taskkill.exe /IM Figma.exe 2>&1 | Out-Null
+        for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep -Milliseconds 500
+            if (@(Get-Process Figma -ErrorAction SilentlyContinue).Count -eq 0) { return $true }
+        }
+        & taskkill.exe /F /IM Figma.exe 2>&1 | Out-Null
+        for ($i = 0; $i -lt 20; $i++) {
+            Start-Sleep -Milliseconds 500
+            if (@(Get-Process Figma -ErrorAction SilentlyContinue).Count -eq 0) { return $true }
+        }
+        return $false
+    } catch {
+        return $false
+    } finally {
+        $ErrorActionPreference = $oldEap
+    }
+}
+
+function Clear-FigmaLocaleCache {
+    # Figma 会把真实英文语言包按 build hash 缓存在 HTTP 缓存里；只要它在代理之外跑过一次，
+    # 之后即使本地代理返回中文，前端仍可能沿用缓存里的英文。清理缓存目录即可。
+    $cacheDir = Join-Path $env:APPDATA 'Figma\DesktopProfile\v44\Cache'
+    if (-not (Test-Path $cacheDir)) { return $false }
+    try {
+        $sizeMb = [math]::Round(((Get-ChildItem $cacheDir -Recurse -File -ErrorAction SilentlyContinue |
+                    Measure-Object Length -Sum).Sum) / 1MB, 1)
+        Remove-Item $cacheDir -Recurse -Force -ErrorAction Stop
+        Write-Log "已清理 Figma 界面缓存（$sizeMb MB），避免旧英文语言包残留"
+        return $true
+    } catch {
+        Write-Log ("清理 Figma 缓存失败: " + $_.Exception.Message)
+        return $false
+    }
+}
+
+function Show-RestartDialog {
+    try {
+        Add-Type -AssemblyName System.Windows.Forms, System.Drawing
+        $form = New-Object System.Windows.Forms.Form
+        $form.Text = 'Figma 中文版'
+        $form.ClientSize = New-Object System.Drawing.Size(470, 176)
+        $form.StartPosition = 'CenterScreen'
+        $form.TopMost = $true
+        $form.FormBorderStyle = 'FixedDialog'
+        $form.MaximizeBox = $false
+        $form.MinimizeBox = $false
+        $label = New-Object System.Windows.Forms.Label
+        $label.SetBounds(16, 14, 438, 104)
+        $label.Text = "Figma 正在运行，但当前这个进程没有走本地代理，所以界面还是英文。`r`n`r`n需要重启 Figma 才能加载中文语言包（不会丢失未保存的内容，Figma 会自动同步）。"
+        $form.Controls.Add($label)
+        $btnRestart = New-Object System.Windows.Forms.Button
+        $btnRestart.Text = '立即重启'
+        $btnRestart.SetBounds(180, 128, 110, 32)
+        $btnRestart.DialogResult = [System.Windows.Forms.DialogResult]::OK
+        $btnCancel = New-Object System.Windows.Forms.Button
+        $btnCancel.Text = '取消'
+        $btnCancel.SetBounds(304, 128, 110, 32)
+        $btnCancel.DialogResult = [System.Windows.Forms.DialogResult]::Cancel
+        $form.Controls.AddRange(@($btnRestart, $btnCancel))
+        $form.AcceptButton = $btnRestart
+        $form.CancelButton = $btnCancel
+        $result = $form.ShowDialog()
+        $form.Dispose()
+        if ($result -eq [System.Windows.Forms.DialogResult]::OK) { return 'restart' }
+        return 'cancel'
+    } catch {
+        return 'cancel'
+    }
+}
+
 function Update-ZhPack {
     if (-not (Test-Path $zhPath)) { Write-Log '缺少 zh.json，跳过更新'; return }
     $ageDays = ((Get-Date) - (Get-Item $zhPath).LastWriteTime).TotalDays
@@ -609,10 +733,32 @@ if (-not $figma) {
     return
 }
 
-if (@(Get-Process Figma -ErrorAction SilentlyContinue).Count -gt 0) {
-    Write-Log 'Figma 已在运行，激活现有窗口（代理参数只在启动时生效）'
-    Start-Process -FilePath $figma
-    return
+$runningFigma = Get-CimInstance Win32_Process -Filter "Name='Figma.exe'" -ErrorAction SilentlyContinue |
+    Where-Object { $_.CommandLine -and $_.CommandLine -notmatch '--type=' }
+if ($runningFigma) {
+    $viaProxy = @($runningFigma | Where-Object { $_.CommandLine -match '--proxy-server=http://127\.0\.0\.1:' })
+    if ($viaProxy.Count -gt 0) {
+        Write-Log 'Figma 已在运行且已走本地代理，激活现有窗口'
+        Start-Process -FilePath $figma
+        return
+    }
+    Write-Log 'Figma 正在运行但没有走本地代理（界面会是英文），询问是否重启'
+    if ((Show-RestartDialog) -ne 'restart') {
+        Write-Log '用户选择取消，不重启 Figma'
+        return
+    }
+    Write-Log '按用户选择重启 Figma'
+    if (-not (Stop-FigmaGracefully)) {
+        Write-Log 'Figma 未能退出，本次不继续启动'
+        try {
+            Add-Type -AssemblyName System.Windows.Forms
+            [void][System.Windows.Forms.MessageBox]::Show("Figma 没有正常退出，请手动关闭 Figma 后再双击「Figma 中文版」。", 'Figma 中文版', 'OK', 'Warning')
+        } catch { }
+        return
+    }
+    Write-Log 'Figma 已退出，继续启动中文版'
+    # 未走代理的实例很可能已经把英文语言包写进了缓存，这里一并清掉
+    [void](Clear-FigmaLocaleCache)
 }
 
 $Port = Get-Port
@@ -684,6 +830,23 @@ if (-not (Test-HostPort '127.0.0.1' $Port)) {
     }
 }
 
+# 健康检查：确认本地代理真的在替换语言包（防止"进程在跑但没生效"）
+if (-not (Test-MitmHealthy)) {
+    Write-Log '健康检查未通过：本地代理返回的不是中文包，重启 mitm 后重试'
+    Stop-Mitm
+    if (-not (Start-Mitm -Mode $mode -UpstreamUrl $upstreamUrl) -or -not (Test-MitmHealthy)) {
+        Write-Log '重启 mitm 后健康检查仍失败，本次不启动 Figma'
+        try {
+            Add-Type -AssemblyName System.Windows.Forms
+            [void][System.Windows.Forms.MessageBox]::Show("本地代理没有生效：语言包没有被替换，Figma 启动后会是英文。`r`n`r`n请查看日志：`r`n$logPath", 'Figma 中文版', 'OK', 'Warning')
+        } catch { }
+        return
+    }
+    Write-Log '重启 mitm 后健康检查通过'
+} else {
+    Write-Log '健康检查通过：语言包由本地代理替换'
+}
+
 Write-Log "启动 Figma（代理 127.0.0.1:$Port，$mode）"
 Start-Process -FilePath $figma -ArgumentList @(
     "--proxy-server=http://127.0.0.1:$Port",
@@ -727,6 +890,11 @@ Write-Title "6/7 检查 Figma 客户端"
 $figmaExe = Test-FigmaInstalled
 if ($figmaExe) {
     Write-Ok "已安装: $figmaExe"
+    if (@(Get-Process Figma -ErrorAction SilentlyContinue).Count -gt 0) {
+        Write-Warn2 "Figma 正在运行：请退出 Figma 后重新运行本脚本，或首次启动「Figma 中文版」时按提示重启"
+    } elseif (Clear-FigmaCacheDir) {
+        Write-Ok "已清理 Figma 界面缓存（避免旧英文语言包残留）"
+    }
 } elseif ($SkipFigma) {
     Write-Warn2 "未检测到 Figma，按参数要求跳过下载"
 } else {
