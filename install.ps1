@@ -183,18 +183,37 @@ function Test-FigmaInstalled {
 }
 
 function Get-FigmaCacheDirs {
-    # 不写死 DesktopProfile / v44：Figma 的 profile 目录名带版本号（v38…v44…），升级即变，
-    # 渠道目录名也不同（stable=DesktopProfile，其它=Profile）。这里在 %APPDATA%\Figma 下
-    # 按深度搜索名为 Cache 且内含 Cache_Data 的目录（Chromium HTTP 缓存特征），
-    # 既覆盖现有布局，也不怕以后换层数/换名字。
+    # 规则来自 Figma 自己的 main.js：
+    #   _a = join(ui, channel==="stable" ? "DesktopProfile" : "Profile"); _a = join(cx, "v" + lI)
+    #   lI = parseInt(process.versions.electron.split(".")[0])   ← 版本号是 Electron 主版本号，会随升级变化
+    # Chromium 的 HTTP 缓存就落在 user-data-dir 下的 Cache\Cache_Data。
+    # 所以：优先读运行中进程的 --user-data-dir（最准，兼容自定义目录），否则按上述结构扫描 v*。
+    $dirs = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+
+    foreach ($p in (Get-CimInstance Win32_Process -Filter "Name='Figma.exe'" -ErrorAction SilentlyContinue)) {
+        if ($p.CommandLine -and $p.CommandLine -match '--user-data-dir=(?:"([^"]+)"|([^\s"]+))') {
+            $userData = if ($matches[1]) { $matches[1] } else { $matches[2] }
+            if ($userData) {
+                $cache = Join-Path $userData.Trim('"') 'Cache'
+                if ((Test-Path (Join-Path $cache 'Cache_Data')) -and -not $seen[$cache]) {
+                    $seen[$cache] = $true
+                    $dirs.Add($cache)
+                }
+            }
+        }
+    }
+    if ($dirs.Count -gt 0) { return $dirs }
+
     $base = Join-Path $env:APPDATA 'Figma'
     if (-not (Test-Path $base)) { return @() }
-    $candidates = Get-ChildItem $base -Directory -Recurse -Depth 5 -Filter 'Cache' -ErrorAction SilentlyContinue
-    $list = New-Object System.Collections.Generic.List[string]
-    foreach ($c in $candidates) {
-        if (Test-Path (Join-Path $c.FullName 'Cache_Data')) { $list.Add($c.FullName) }
+    foreach ($c in (Get-ChildItem $base -Directory -Recurse -Depth 3 -Filter 'Cache' -ErrorAction SilentlyContinue)) {
+        if ((Test-Path (Join-Path $c.FullName 'Cache_Data')) -and -not $seen[$c.FullName]) {
+            $seen[$c.FullName] = $true
+            $dirs.Add($c.FullName)
+        }
     }
-    return $list
+    return $dirs
 }
 
 function Clear-FigmaCacheDir {
@@ -656,16 +675,35 @@ function Stop-FigmaGracefully {
 }
 
 function Get-FigmaCacheDirs {
-    # 不写死 profile 版本号/渠道名：在 %APPDATA%\Figma 下按深度搜索名为 Cache 且含
-    # Cache_Data 的目录（Chromium HTTP 缓存特征），Figma 改目录层级也不会漏。
+    # 规则来自 Figma main.js：
+    #   <APPDATA>\Figma\<DesktopProfile|Profile>\v<Electron 主版本号>\Cache
+    #   其中版本号 = parseInt(process.versions.electron.split(".")[0])，随 Electron 升级变化。
+    # 优先用运行中进程的 --user-data-dir（兼容自定义目录），否则按上述结构扫描。
+    $dirs = New-Object System.Collections.Generic.List[string]
+    $seen = @{}
+    foreach ($p in (Get-CimInstance Win32_Process -Filter "Name='Figma.exe'" -ErrorAction SilentlyContinue)) {
+        if ($p.CommandLine -and $p.CommandLine -match '--user-data-dir=(?:"([^"]+)"|([^\s"]+))') {
+            $userData = if ($matches[1]) { $matches[1] } else { $matches[2] }
+            if ($userData) {
+                $cache = Join-Path $userData.Trim('"') 'Cache'
+                if ((Test-Path (Join-Path $cache 'Cache_Data')) -and -not $seen[$cache]) {
+                    $seen[$cache] = $true
+                    $dirs.Add($cache)
+                }
+            }
+        }
+    }
+    if ($dirs.Count -gt 0) { return $dirs }
+
     $base = Join-Path $env:APPDATA 'Figma'
     if (-not (Test-Path $base)) { return @() }
-    $candidates = Get-ChildItem $base -Directory -Recurse -Depth 5 -Filter 'Cache' -ErrorAction SilentlyContinue
-    $list = New-Object System.Collections.Generic.List[string]
-    foreach ($c in $candidates) {
-        if (Test-Path (Join-Path $c.FullName 'Cache_Data')) { $list.Add($c.FullName) }
+    foreach ($c in (Get-ChildItem $base -Directory -Recurse -Depth 3 -Filter 'Cache' -ErrorAction SilentlyContinue)) {
+        if ((Test-Path (Join-Path $c.FullName 'Cache_Data')) -and -not $seen[$c.FullName]) {
+            $seen[$c.FullName] = $true
+            $dirs.Add($c.FullName)
+        }
     }
-    return $list
+    return $dirs
 }
 
 function Clear-FigmaLocaleCache {

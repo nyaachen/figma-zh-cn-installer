@@ -109,15 +109,34 @@ Figma 会把真实英文语言包按 build hash 缓存在自己的 HTTP 缓存�
 - 安装时（Figma 未运行）自动清理一次 Figma 的界面缓存，并输出清理了几个目录
 - 启动器发现未走代理的实例、按用户确认重启时，也会清理缓存后再启动
 
-缓存目录是**自动发现**的，不写死路径：在 `%APPDATA%\Figma` 下按深度（最多 5 层）搜索
-名为 `Cache` 且内含 `Cache_Data` 的目录（Chromium HTTP 缓存的特征），全部清理。
-这样 Figma 升级把 profile 目录从 `v44` 涨到 `v45`、或渠道目录名变化（`DesktopProfile` /
-`Profile`）都不需要改脚本；实测 `DesktopProfile\v99`、`Profile\v1`、
-`NewLayout\profiles\v7` 三种布局都能命中，而同层名字不叫 `Cache` 的目录不会被误删。
+缓存目录不是靠猜目录名，规则取自 Figma 自己的 `resources/app.asar` → `main.js`：
 
-只有一种情况需要更新脚本：Figma 彻底更换缓存实现（不再有名为 `Cache` 且含
-`Cache_Data` 的目录）。那时安装日志会显示"未发现需要清理的 Figma 缓存目录"，
-症状会退回"装完是英文"——看到这条日志就说明该更新脚本了。
+```js
+lI = parseInt(process.versions.electron.split(".")[0]);            // 版本号 = Electron 主版本号
+cx = join(channel === "stable" ? base : profileDir,
+          channel === "stable" ? "DesktopProfile" : "Profile");
+_a = join(cx, `v${lI}`);                                            // 即 --user-data-dir
+```
+
+Chromium 的 HTTP 缓存就在 `<user-data-dir>\Cache\Cache_Data`。本机实测：
+Figma 126.11.8 / Electron 44.10.0 → 目录 `DesktopProfile\v44`，与公式一致。
+
+脚本的取法（两级）：
+
+1. **Figma 正在运行**：直接读进程命令行里的 `--user-data-dir=...`，拼 `Cache` 子目录——
+   精确，且能覆盖自定义 profile 目录的用法
+2. **Figma 未运行**：在 `%APPDATA%\Figma` 下按上述结构找 `<渠道>\v*\Cache`，
+   只取内含 `Cache_Data` 的目录（按 main.js 的迁移逻辑，只有当前版本 profile 才有 Cache）
+
+因此下面这些变化**不需要改脚本**：
+
+- Electron 升级导致 `v44` → `v45`（`v*` 通配，且运行时走 `--user-data-dir`）
+- 渠道目录名不同：`DesktopProfile` / `Profile` / `DesktopGov` / `DesktopBeta`（扫码时通配）
+- 用户用参数把 profile 放到别处（运行中读命令行，精确命中）
+
+需要更新脚本的只有一种情况：Figma 更换缓存实现，不再使用 `<user-data-dir>\Cache`。
+这时安装日志会显示"未发现需要清理的 Figma 缓存目录"，症状会退回"装完是英文"，
+看到这条日志就说明该按新版 main.js 更新路径规则了。
 
 注意：清理缓存会让 Figma 下次启动重新下载界面资源（几十 MB），属一次性开销。
 请统一用「Figma 中文版」启动，不要再用原来的 Figma 图标。
