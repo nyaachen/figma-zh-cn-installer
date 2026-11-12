@@ -3,15 +3,17 @@
 给 Figma 桌面客户端配置「本地代理 + 中文语言包」，让界面变成中文。
 单个 `.ps1` 文件，可放在任意静态站点，用 `irm ... | iex` 直接跑。
 
+界面所使用的中文语言包来自开源项目
+[kailous/figma-zh-CN-localized](https://github.com/kailous/figma-zh-CN-localized)，
+本仓库只负责安装与本地代理配置，不内置、不转发语言包（详见 [语言包来源与致谢](#语言包来源与致谢)）。
+
 ## 直接安装（本仓库）
 
 ```powershell
 irm https://raw.githubusercontent.com/nyaachen/figma-zh-cn-installer/main/install.ps1 | iex
 ```
 
-仓库：https://github.com/nyaachen/figma-zh-cn-installer
-给 Figma 桌面客户端配置「本地代理 + 中文语言包」，让界面变成中文。
-单个 `.ps1` 文件，可放在任意静态站点，用 `irm ... | iex` 直接跑。
+仓库：<https://github.com/nyaachen/figma-zh-cn-installer>
 
 ## 部署
 
@@ -149,13 +151,28 @@ Figma 126.11.8 / Electron 44.10.0 → 目录 `DesktopProfile\v44`，与公式一
 3. 删除 `%USERPROFILE%\.figma-zh-cn`
 4. 如果 mitm 还在跑：`Get-Process mitmdump | Stop-Process`
 
+## 语言包来源与致谢
+
+中文语言包**不是本仓库翻译的**，来自开源项目：
+
+- 项目主页：[kailous/figma-zh-CN-localized](https://github.com/kailous/figma-zh-CN-localized)
+- 语言包直链（本工具默认从这里下载）：<https://kailous.github.io/figma-zh-CN-localized/lang/zh.json>
+
+上游项目把 Figma 官方英文语言包翻译成中文，并每 30 分钟跟随 Figma 英文包更新，
+同时维护术语表（MCP、组件、实例、令牌等产品/技术名的统一译法）。
+本仓库只负责"让 Figma 加载这份语言包"所需的安装与本地代理配置，
+**不转发、也不内置 `zh.json`**——安装时才从上面这个直链下载。
+翻译质量、缺词、术语问题请提到[上游仓库](https://github.com/kailous/figma-zh-CN-localized/issues)。
+
 ## 已知限制
 
 - 只处理 Figma 桌面客户端；网页版（浏览器）不生效。
 - 登录页/授权页走另一份 `auth_iframe-*` 语言包，仍是英文。
-- 语言包来自上游项目 `kailous/figma-zh-CN-localized`，每 30 分钟跟随 Figma 英文包更新；
-  本机启动器在包超过 7 天时自动刷新。Figma 新增文案若上游未翻译，按缺键回退。
-- 首次安装需要能访问 python.org、pypi.org、kailous.github.io；下载 Figma 时需要 figma.com。
+- 语言包由上游 [kailous/figma-zh-CN-localized](https://github.com/kailous/figma-zh-CN-localized)
+  每 30 分钟跟随 Figma 英文包更新，本机启动器在包超过 7 天时自动刷新；
+  Figma 新增文案若上游尚未翻译，按缺键回退。
+- 首次安装需要能访问 python.org、pypi.org 以及
+  [kailous.github.io](https://kailous.github.io/figma-zh-CN-localized/lang/zh.json)；下载 Figma 时需要 figma.com。
 - Figma 自动升级后语言包文件名 hash 会变，插件按模式匹配，无需重新安装。
 
 ## 本机实测覆盖（2026-11-12，Figma 126.11.8 / Windows 11）
