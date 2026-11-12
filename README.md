@@ -1,5 +1,15 @@
-# Figma 中文版 · Windows 安装脚本
+﻿# Figma 中文版 · Windows 安装脚本
 
+给 Figma 桌面客户端配置「本地代理 + 中文语言包」，让界面变成中文。
+单个 `.ps1` 文件，可放在任意静态站点，用 `irm ... | iex` 直接跑。
+
+## 直接安装（本仓库）
+
+```powershell
+irm https://raw.githubusercontent.com/nyaachen/figma-zh-cn-installer/main/install.ps1 | iex
+```
+
+仓库：https://github.com/nyaachen/figma-zh-cn-installer
 给 Figma 桌面客户端配置「本地代理 + 中文语言包」，让界面变成中文。
 单个 `.ps1` 文件，可放在任意静态站点，用 `irm ... | iex` 直接跑。
 
