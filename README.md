@@ -106,8 +106,18 @@ Figma 会把真实英文语言包按 build hash 缓存在自己的 HTTP 缓存�
 
 现在两处都处理了：
 
-- 安装时（Figma 未运行）自动清理一次 Figma 的界面缓存，并输出提示
+- 安装时（Figma 未运行）自动清理一次 Figma 的界面缓存，并输出清理了几个目录
 - 启动器发现未走代理的实例、按用户确认重启时，也会清理缓存后再启动
+
+缓存目录是**自动发现**的，不写死路径：在 `%APPDATA%\Figma` 下按深度（最多 5 层）搜索
+名为 `Cache` 且内含 `Cache_Data` 的目录（Chromium HTTP 缓存的特征），全部清理。
+这样 Figma 升级把 profile 目录从 `v44` 涨到 `v45`、或渠道目录名变化（`DesktopProfile` /
+`Profile`）都不需要改脚本；实测 `DesktopProfile\v99`、`Profile\v1`、
+`NewLayout\profiles\v7` 三种布局都能命中，而同层名字不叫 `Cache` 的目录不会被误删。
+
+只有一种情况需要更新脚本：Figma 彻底更换缓存实现（不再有名为 `Cache` 且含
+`Cache_Data` 的目录）。那时安装日志会显示"未发现需要清理的 Figma 缓存目录"，
+症状会退回"装完是英文"——看到这条日志就说明该更新脚本了。
 
 注意：清理缓存会让 Figma 下次启动重新下载界面资源（几十 MB），属一次性开销。
 请统一用「Figma 中文版」启动，不要再用原来的 Figma 图标。
